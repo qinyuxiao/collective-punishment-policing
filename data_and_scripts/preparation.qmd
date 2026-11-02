@@ -1,0 +1,743 @@
+---
+title: "Data preparation"
+toc: true
+highlight-style: pygments
+format:
+  html:
+    toc: true
+    toc-location: left
+    toc-title: Contents
+    embed-resources: true
+number-sections: true
+---
+
+This file prepares datasets in different formats from the full cleaned dataset (`dat.f`) for data analysis.
+
+# Load packages and data
+
+```{r package-and-data}
+#| warning: false
+#| message: false
+library(tidyverse)
+misty::setsource()
+
+dat.f <- read_csv("data/data_full_cleaned.csv", col_names = TRUE)
+```
+
+```{r preprocessing-on-full-data}
+# Factorise
+dat.f <- dat.f %>%
+  mutate(
+    under_cp = factor(under_cp, levels = c(0, 1)),
+    under_pp = factor(under_pp, levels = c(0, 1)),
+    condition = factor(
+      condition,
+      levels = c("control", "cp_only", "pp_only", "cp_peer"),
+      labels = c("Control", "CP-Only", "PP-Only", "CP-and-PP")
+    )
+  )
+```
+
+```{r}
+dat.c <- dat.f %>% filter(n_round_done_grp == 3) # completed all three rounds
+```
+
+
+# Notes about dataset names
+
+- `a` means the data come from all who started the study, including those who later dropped out. `c` means the data come from all who completed the study.
+- `g` means group-level data; `p` means participant-level data.
+- `.l` suffix means long-format data.
+
+For example, a dataset name starting with `dat.a.g_` (more information on what the data are about follows the underscore) and ending with `.l` means that the data come from all participants, including dropouts; the observations are on the group level; and the data are in the long format.
+
+# List of datasets created
+
+```{r}
+my_datasets <- c(
+  "dat.f",
+  "dat.c",
+  "dat.a.p_match",
+  "dat.a.p_match.l",
+  "dat.a.g_match",
+  "dat.a.g_match.l",
+  "dat.c.p_match",
+  "dat.c.p_match.l",
+  "dat.c.g_match",
+  "dat.c.g_match.l",
+  "dat.a.p_punishment",
+  "dat.a.g_punishment",
+  "dat.c.p_punishment",
+  "dat.c.g_punishment"
+)
+```
+
+# Game Behaviours
+
+## All participants
+
+`dat.a.p_match`: If a participant drops out in the second round or in the peer punishment stage of the first round (when their condition has peer punishment), their game behaviour data for the first round are included. For those who were affected by this dropout, their data for the second round are included.
+
+```{r}
+dat.a.p_match <- dat.f %>%
+  select(
+    subject_id, group_id, condition, under_cp, under_pp,
+    match_1, match_2, match_3, d_score,
+    is_dropout, affected_by_dropout,
+    n_games_done_ind,
+  ) %>%
+  mutate(
+    match_1 = case_when(n_games_done_ind < 1 ~ NA_real_, TRUE ~ match_1),
+    match_2 = case_when(n_games_done_ind < 2 ~ NA_real_, TRUE ~ match_2),
+    match_3 = case_when(n_games_done_ind < 3 ~ NA_real_, TRUE ~ match_3),
+    d_score = case_when(d_score == 0 ~ NA_real_, TRUE ~ d_score)
+  )
+
+dat.a.p_match.l <- dat.a.p_match %>%
+  pivot_longer(
+    cols = starts_with("match_"),
+    names_to = c("round_number"),
+    names_pattern = "match_(\\d)",
+    values_to = "match"
+  ) %>%
+  mutate(
+    non_match = case_when(!is.na(match) ~ 9 - match, TRUE ~ NA_real_),
+    round_number = factor(round_number, levels = c(1, 2, 3))
+  )
+```
+
+`dat.a.g_match`: This dataset has data from groups that did not complete the study due to dropouts. A group must at least complete one round of Mind Games (i.e., not including the peer punishment) to have data. Otherwise, they only have `NA` data.
+
+```{r}
+dat.a.g_match <- dat.f %>%
+  group_by(group_id) %>%
+  summarise(
+    match_1 = unique(group_total_match_1)[1],
+    match_2 = unique(group_total_match_2)[1],
+    match_3 = unique(group_total_match_3)[1],
+    condition = unique(condition)[1],
+    under_cp = unique(under_cp)[1],
+    under_pp = unique(under_pp)[1],
+    n_games_done_grp = unique(n_games_done_grp)[1]
+  ) %>%
+  select(
+    group_id, condition, under_cp, under_pp,
+    n_games_done_grp, match_1, match_2, match_3
+  ) %>%
+  mutate(
+    match_avg = case_when(
+      # Only those groups that completed all three rounds
+      n_games_done_grp == 3 ~ (match_1 + match_2 + match_3)/3,
+      TRUE ~ NA_real_
+    ),
+    match_sd = apply(
+      # SD across three rounds of play
+      across(c(match_1, match_2, match_3)), 1,
+      function(x) sd(x, na.rm = TRUE)
+    )
+  )
+  
+dat.a.g_match.l <- dat.a.g_match %>%
+  select(-c("match_avg", "match_sd")) %>%
+  pivot_longer(
+    cols = starts_with("match_"),
+    names_to = c("round_number"),
+    names_pattern = "match_(\\d)",
+    values_to = "match"
+  ) %>%
+  mutate(round_number = factor(round_number, levels = c(1, 2, 3)))
+```
+
+## Excluding groups that did not complete
+
+```{r}
+dat.c.p_match <- dat.c %>%
+  select(
+    subject_id, group_id, condition, under_cp, under_pp,
+    match_1, match_2, match_3, d_score
+  )
+
+dat.c.p_match.l <- dat.c.p_match %>%
+  pivot_longer(
+    cols = starts_with("match_"),
+    names_to = c("round_number"),
+    names_pattern = "match_(\\d)",
+    values_to = "match"
+  ) %>%
+  mutate(
+    non_match = 9 - match,
+    round_number = factor(round_number, levels = c(1, 2, 3))
+  )
+```
+
+```{r}
+dat.c.g_match <- dat.c %>%
+  group_by(group_id) %>%
+  summarise(
+    match_1 = mean(group_total_match_1),
+    match_2 = mean(group_total_match_2),
+    match_3 = mean(group_total_match_3),
+    condition = unique(condition)[1],
+    under_cp = unique(under_cp)[1],
+    under_pp = unique(under_pp)[1]
+  ) %>%
+  select(group_id, condition, under_cp, under_pp, match_1, match_2, match_3) %>%
+  mutate(
+    match_avg = (match_1 + match_2 + match_3)/3,
+    match_sd = apply(across(c(match_1, match_2, match_3)), 1, sd)
+  )
+
+dat.c.g_match.l <- dat.c.g_match %>%
+  select(-c("match_avg", "match_sd")) %>%
+  pivot_longer(
+    cols = starts_with("match_"),
+    names_to = c("round_number"),
+    names_pattern = "match_(\\d)",
+    values_to = "match"
+  ) %>%
+  mutate(round_number = factor(round_number, levels = c(1, 2, 3)))
+```
+
+# Punishment behaviours
+
+## All participants
+
+### Participant-level data
+
+`dat.a.p_punishment` contains all peer punishment data, including punishment taking place in groups that did not complete the study as well as punishment of size zero. Each observation is an instance of punishment and includes information about both the punisher and the punished participant.
+
+Notes about variable names:
+
+- `prev`, `curr`, and `next` mean the previous round, the current round, and the next round.
+- For each variable whose name starts with `punisher_`, there is one starting with `punished_` recording corresponding information for the punished participant.
+
+```{r}
+dat.a.p_punishment <- dat.f %>%
+  filter(under_pp == 1) %>%
+  select(
+    subject_id, under_cp, group_id, id_in_group,
+    is_dropout, affected_by_dropout,
+    n_games_done_grp, n_games_done_ind, n_round_done_grp, n_round_done_ind,
+    match_1, match_2, match_3,
+    whether_cp_1, whether_cp_2, whether_cp_3,
+    group_total_match_1, group_total_match_2, group_total_match_3,
+    pp_sent_1, pp_sent_2, pp_sent_3,
+    pp_received_1, pp_received_2, pp_received_3,
+    matches("^punish_p.*"),
+    d_score, age, gender
+  ) %>%
+  pivot_longer(
+    cols = starts_with("punish_p"),
+    names_to = c("punished_id_in_group", "round_number"),
+    names_pattern = "punish_p(\\d)_(\\d)",
+    values_to = "punishment_size"
+  ) %>%
+  filter(
+    # Include only when the round was actually completed
+    n_round_done_ind >= round_number,
+    # Remove punishment assigned to oneself
+    # (Note that participants could not actually do this)
+    id_in_group != punished_id_in_group
+  ) %>%
+  mutate(
+    group_match_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ group_total_match_1,
+      round_number == 3 ~ group_total_match_2,
+      TRUE ~ NA_real_
+    ),
+    group_match_curr = case_when(
+      round_number == 1 ~ group_total_match_1,
+      round_number == 2 ~ group_total_match_2,
+      round_number == 3 ~ group_total_match_3,
+      TRUE ~ NA_real_
+    ),
+    group_match_next = case_when(
+      round_number == 1 ~ group_total_match_2,
+      round_number == 2 ~ group_total_match_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    whether_cp_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ whether_cp_1,
+      round_number == 3 ~ whether_cp_2,
+      TRUE ~ NA_real_
+    ),
+    whether_cp_curr = case_when(
+      round_number == 1 ~ whether_cp_1,
+      round_number == 2 ~ whether_cp_2,
+      round_number == 3 ~ whether_cp_3,
+      TRUE ~ NA_real_
+    ),
+    whether_cp_next = case_when(
+      round_number == 1 ~ whether_cp_2,
+      round_number == 2 ~ whether_cp_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punisher_match_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ match_1,
+      round_number == 3 ~ match_2,
+      TRUE ~ NA_real_
+    ),
+    punisher_match_curr = case_when(
+      round_number == 1 ~ match_1,
+      round_number == 2 ~ match_2,
+      round_number == 3 ~ match_3,
+      TRUE ~ NA_real_
+    ),
+    punisher_match_next = case_when(
+      round_number == 1 ~ match_2,
+      round_number == 2 ~ match_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_sent_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ pp_sent_1,
+      round_number == 3 ~ pp_sent_2,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_sent_curr = case_when(
+      round_number == 1 ~ pp_sent_1,
+      round_number == 2 ~ pp_sent_2,
+      round_number == 3 ~ pp_sent_3,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_sent_next = case_when(
+      round_number == 1 ~ pp_sent_2,
+      round_number == 2 ~ pp_sent_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_received_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ pp_received_1,
+      round_number == 3 ~ pp_received_2,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_received_curr = case_when(
+      round_number == 1 ~ pp_received_1,
+      round_number == 2 ~ pp_received_2,
+      round_number == 3 ~ pp_received_3,
+      TRUE ~ NA_real_
+    ),
+    punisher_pp_received_next = case_when(
+      round_number == 1 ~ pp_received_2,
+      round_number == 2 ~ pp_received_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punished_id_in_group = as.double(punished_id_in_group)
+  ) %>%
+  select(
+    group_id,
+    under_cp,
+    round_number,
+    n_round_done_grp,
+    n_games_done_grp,
+    n_round_done_ind,
+    n_games_done_ind,
+    group_match_prev,
+    group_match_curr,
+    group_match_next,
+    whether_cp_prev,
+    whether_cp_curr,
+    whether_cp_next,
+    punisher_id = subject_id,
+    punisher_id_in_group = id_in_group,
+    punisher_is_dropout = is_dropout,
+    punisher_affected_by_dropout = affected_by_dropout,
+    punisher_match_prev,
+    punisher_match_curr,
+    punisher_match_next,
+    punisher_pp_sent_prev,
+    punisher_pp_sent_curr,
+    punisher_pp_sent_next,
+    punisher_pp_received_prev,
+    punisher_pp_received_curr,
+    punisher_pp_received_next,
+    punisher_d = d_score,
+    punisher_age = age,
+    punisher_gender = gender,
+    punishment_size,
+    punished_id_in_group
+  ) %>%
+  left_join(
+    y = select(
+      dat.f,
+      group_id,
+      punished_id = subject_id,
+      punished_id_in_group = id_in_group,
+      punished_is_dropout = is_dropout,
+      punished_affected_by_dropout = affected_by_dropout,
+      punished_match_1 = match_1,
+      punished_match_2 = match_2,
+      punished_match_3 = match_3,
+      punished_pp_sent_1 = pp_sent_1,
+      punished_pp_sent_2 = pp_sent_2,
+      punished_pp_sent_3 = pp_sent_3,
+      punished_pp_received_1 = pp_received_1,
+      punished_pp_received_2 = pp_received_2,
+      punished_pp_received_3 = pp_received_3,
+      punished_d = d_score,
+      punished_age = age,
+      punished_gender = gender,
+    ),
+    by = c("group_id", "punished_id_in_group")
+  ) %>%
+  mutate(
+    punished_match_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ punished_match_1,
+      round_number == 3 ~ punished_match_2,
+      TRUE ~ NA_real_
+    ),
+    punished_match_curr = case_when(
+      round_number == 1 ~ punished_match_1,
+      round_number == 2 ~ punished_match_2,
+      round_number == 3 ~ punished_match_3,
+      TRUE ~ NA_real_
+    ),
+    punished_match_next = case_when(
+      round_number == 1 ~ punished_match_2,
+      round_number == 2 ~ punished_match_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_sent_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ punished_pp_sent_1,
+      round_number == 3 ~ punished_pp_sent_2,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_sent_curr = case_when(
+      round_number == 1 ~ punished_pp_sent_1,
+      round_number == 2 ~ punished_pp_sent_2,
+      round_number == 3 ~ punished_pp_sent_3,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_sent_next = case_when(
+      round_number == 1 ~ punished_pp_sent_2,
+      round_number == 2 ~ punished_pp_sent_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_received_prev = case_when(
+      round_number == 1 ~ NA_real_,
+      round_number == 2 ~ punished_pp_received_1,
+      round_number == 3 ~ punished_pp_received_2,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_received_curr = case_when(
+      round_number == 1 ~ punished_pp_received_1,
+      round_number == 2 ~ punished_pp_received_2,
+      round_number == 3 ~ punished_pp_received_3,
+      TRUE ~ NA_real_
+    ),
+    punished_pp_received_next = case_when(
+      round_number == 1 ~ punished_pp_received_2,
+      round_number == 2 ~ punished_pp_received_3,
+      round_number == 3 ~ NA_real_,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(-c(
+    "punished_match_1",
+    "punished_match_2",
+    "punished_match_3",
+    "punished_pp_sent_1",
+    "punished_pp_sent_2",
+    "punished_pp_sent_3",
+    "punished_pp_received_1",
+    "punished_pp_received_2",
+    "punished_pp_received_3"
+  )) %>%
+  mutate(
+    punisher_type = case_when(
+      is.na(punisher_match_curr) ~ NA_character_,
+      punisher_match_curr > 3 ~ "d",
+      punisher_match_curr <= 3 ~ "h",
+      TRUE ~ NA_character_
+    ),
+    punished_type = case_when(
+      is.na(punished_match_curr) ~ NA_character_,
+      punished_match_curr > 3 ~ "d",
+      punished_match_curr <= 3 ~ "h",
+      TRUE ~ NA_character_
+    ),
+    condition = factor(
+      under_cp,
+      levels = c(0, 1),
+      labels = c("PP-Only", "CP-and-PP")
+    )
+  ) %>%
+  mutate(
+    h_to_d = case_when(
+      punisher_type == "h" & punished_type == "d" ~ 1,
+      TRUE ~ 0
+    )
+  ) %>%
+  select(condition, punisher_type, punished_type, h_to_d, everything()) %>%
+  mutate(
+    punished_match_change = case_when(
+      is.na(punished_match_next) ~ NA_real_,
+      !is.na(punished_match_next) ~ punished_match_next - punished_match_curr,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+### Group-level data
+
+`dat.a.g_punishment` aggregates peer punishment data on the group level. Each observation has data from one round (hence, groups have three observations if they complete the study).
+
+Notes about variables and their names:
+
+- `num_h` and `num_d`: The number of group members that are considered honest (i.e., reporting 3 or fewer matches) and dishonest (i.e., reporting more than 3 matches) in the current round
+- `sum_p`: Total **amount** of peer punishment
+- `num_p`: Total **instances** of peer punishment
+- `num_punisher`: The number of group members that punished (regardless of instances and amount)
+- `num_punished`: The number of group members that were punished (regardless of instances and amount)
+- `num_h_punisher` and `num_d_punisher`: The number of honest/dishonest group members that punished
+- `num_h_punished` and `num_d_punished`: The number of honest/dishonest group members that were punished
+- `num_punishing_h` and `num_punishing_d`: The number of group members that punished honest/dishonest group members
+- `num_h_punishing_d` and `num_d_punishing_h`: The number of honest/dishonest group members that punished dishonest/honest group members
+
+```{r}
+#| warning: false
+#| message: false
+dat.a.g_punishment1 <- dat.a.p_punishment %>%
+  # The entire group must complete the current round
+  filter(round_number <= n_round_done_grp) %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    condition = unique(condition)[1],
+    under_cp = unique(under_cp)[1],
+    group_match = mean(group_match_curr),
+    whether_cp = unique(whether_cp_curr)[1],
+    # Each punisher has 7 observations in one round
+    num_h = as.integer(sum(punisher_type == "h")/7),
+    num_d = as.integer(sum(punisher_type == "d")/7)
+  )
+
+dat.a.g_punishment2 <- dat.a.p_punishment %>%
+  # The entire group must complete the current round
+  filter(round_number <= n_round_done_grp) %>%
+  # Remove punishment with size zero
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punisher_type, punished_type) %>%
+  summarise(sum_p = sum(punishment_size), num_p = n()) %>%
+  pivot_wider(
+    id_cols = c("group_id", "round_number"),
+    id_expand = TRUE,
+    values_from = c("sum_p", "num_p"),
+    values_fill = 0,
+    names_from = c("punisher_type", "punished_type"),
+    names_expand = TRUE,
+    names_glue = "{.value}_{punisher_type}_to_{punished_type}"
+  ) %>%
+  mutate(
+    sum_p = sum_p_d_to_d + sum_p_d_to_h + sum_p_h_to_d + sum_p_h_to_h,
+    sum_p_by_h = sum_p_h_to_d + sum_p_h_to_h,
+    sum_p_by_d = sum_p_d_to_d + sum_p_d_to_h,
+    sum_p_to_h = sum_p_d_to_h + sum_p_h_to_h,
+    sum_p_to_d = sum_p_d_to_d + sum_p_h_to_d,
+    num_p = num_p_d_to_d + num_p_d_to_h + num_p_h_to_d + num_p_h_to_h,
+    num_p_by_h = num_p_h_to_d + num_p_h_to_h,
+    num_p_by_d = num_p_d_to_d + num_p_d_to_h,
+    num_p_to_h = num_p_d_to_h + num_p_h_to_h,
+    num_p_to_d = num_p_d_to_d + num_p_h_to_d,
+  ) %>%
+  select(
+    group_id, round_number,
+    sum_p, sum_p_by_h, sum_p_by_d, sum_p_to_h, sum_p_to_d,
+    sum_p_d_to_d, sum_p_d_to_h, sum_p_h_to_d, sum_p_h_to_h,
+    num_p, num_p_by_h, num_p_by_d, num_p_to_h, num_p_to_d,
+    num_p_d_to_d, num_p_d_to_h, num_p_h_to_d, num_p_h_to_h
+  )
+
+dat.a.g_punishment3 <- dat.a.p_punishment %>%
+  # The entire group must complete the current round
+  filter(round_number <= n_round_done_grp) %>%
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punisher_id_in_group) %>%
+  summarise(
+    # Whether this participant punished
+    punisher = sum(punishment_size) > 0,
+    h_punisher = unique(punisher_type)[1] == "h",
+    d_punisher = unique(punisher_type)[1] == "d",
+    punishing_h = "h" %in% unique(punished_type),
+    punishing_d = "d" %in% unique(punished_type),
+    h_punishing_d = unique(punisher_type)[1] == "h" & "d" %in% unique(punished_type),
+    h_punishing_h = unique(punisher_type)[1] == "h" & "h" %in% unique(punished_type),
+    d_punishing_h = unique(punisher_type)[1] == "d" & "h" %in% unique(punished_type),
+    d_punishing_d = unique(punisher_type)[1] == "d" & "d" %in% unique(punished_type),
+  ) %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    num_punisher = sum(punisher),
+    num_h_punisher = sum(h_punisher),
+    num_d_punisher = sum(d_punisher),
+    num_punishing_h = sum(punishing_h),
+    num_punishing_d = sum(punishing_d),
+    num_h_punishing_d = sum(h_punishing_d),
+    num_h_punishing_h = sum(h_punishing_h),
+    num_d_punishing_h = sum(d_punishing_h),
+    num_d_punishing_d = sum(d_punishing_d),
+  )
+
+dat.a.g_punishment4 <- dat.a.p_punishment %>%
+  # The entire group must complete the current round
+  filter(round_number <= n_round_done_grp) %>%
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punished_id_in_group) %>%
+  summarise(
+    # Whether this participant was punished
+    punished = sum(punishment_size) > 0,
+    h_punished = unique(punished_type)[1] == "h",
+    d_punished = unique(punished_type)[1] == "d",
+  ) %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    num_punished = sum(punished),
+    num_h_punished = sum(h_punished),
+    num_d_punished = sum(d_punished),
+  )
+
+# Combine the four data frames
+dat.a.g_punishment <- dat.a.g_punishment1 %>%
+  left_join(dat.a.g_punishment2, by = c("group_id", "round_number")) %>%
+  left_join(dat.a.g_punishment3, by = c("group_id", "round_number")) %>%
+  left_join(dat.a.g_punishment4, by = c("group_id", "round_number"))
+
+# Fill in zeros
+dat.a.g_punishment <- dat.a.g_punishment %>%
+  mutate(across(sum_p:num_d_punished, ~ ifelse(is.na(.), 0, .)))
+```
+
+## Excluding groups that did not complete
+
+### Participant-level data
+
+```{r}
+dat.c.p_punishment <- dat.a.p_punishment %>%
+  filter(punisher_is_dropout != 1 & punisher_affected_by_dropout != 1)
+```
+
+### Group-level data
+
+```{r}
+#| warning: false
+#| message: false
+dat.c.g_punishment1 <- dat.c.p_punishment %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    condition = unique(condition)[1],
+    under_cp = unique(under_cp)[1],
+    group_match = mean(group_match_curr),
+    whether_cp = unique(whether_cp_curr)[1],
+    # Each punisher has 7 observations in one round
+    num_h = as.integer(sum(punisher_type == "h")/7),
+    num_d = as.integer(sum(punisher_type == "d")/7)
+  )
+
+dat.c.g_punishment2 <- dat.c.p_punishment %>%
+  # Remove punishment with size zero
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punisher_type, punished_type) %>%
+  summarise(sum_p = sum(punishment_size), num_p = n()) %>%
+  pivot_wider(
+    id_cols = c("group_id", "round_number"),
+    id_expand = TRUE,
+    values_from = c("sum_p", "num_p"),
+    values_fill = 0,
+    names_from = c("punisher_type", "punished_type"),
+    names_expand = TRUE,
+    names_glue = "{.value}_{punisher_type}_to_{punished_type}"
+  ) %>%
+  mutate(
+    sum_p = sum_p_d_to_d + sum_p_d_to_h + sum_p_h_to_d + sum_p_h_to_h,
+    sum_p_by_h = sum_p_h_to_d + sum_p_h_to_h,
+    sum_p_by_d = sum_p_d_to_d + sum_p_d_to_h,
+    sum_p_to_h = sum_p_d_to_h + sum_p_h_to_h,
+    sum_p_to_d = sum_p_d_to_d + sum_p_h_to_d,
+    num_p = num_p_d_to_d + num_p_d_to_h + num_p_h_to_d + num_p_h_to_h,
+    num_p_by_h = num_p_h_to_d + num_p_h_to_h,
+    num_p_by_d = num_p_d_to_d + num_p_d_to_h,
+    num_p_to_h = num_p_d_to_h + num_p_h_to_h,
+    num_p_to_d = num_p_d_to_d + num_p_h_to_d,
+  ) %>%
+  select(
+    group_id, round_number,
+    sum_p, sum_p_by_h, sum_p_by_d, sum_p_to_h, sum_p_to_d,
+    sum_p_d_to_d, sum_p_d_to_h, sum_p_h_to_d, sum_p_h_to_h,
+    num_p, num_p_by_h, num_p_by_d, num_p_to_h, num_p_to_d,
+    num_p_d_to_d, num_p_d_to_h, num_p_h_to_d, num_p_h_to_h
+  )
+
+dat.c.g_punishment3 <- dat.c.p_punishment %>%
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punisher_id_in_group) %>%
+  summarise(
+    # Whether this participant punished
+    punisher = sum(punishment_size) > 0,
+    h_punisher = unique(punisher_type)[1] == "h",
+    d_punisher = unique(punisher_type)[1] == "d",
+    punishing_h = "h" %in% unique(punished_type),
+    punishing_d = "d" %in% unique(punished_type),
+    h_punishing_d = unique(punisher_type)[1] == "h" & "d" %in% unique(punished_type),
+    h_punishing_h = unique(punisher_type)[1] == "h" & "h" %in% unique(punished_type),
+    d_punishing_h = unique(punisher_type)[1] == "d" & "h" %in% unique(punished_type),
+    d_punishing_d = unique(punisher_type)[1] == "d" & "d" %in% unique(punished_type),
+  ) %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    num_punisher = sum(punisher),
+    num_h_punisher = sum(h_punisher),
+    num_d_punisher = sum(d_punisher),
+    num_punishing_h = sum(punishing_h),
+    num_punishing_d = sum(punishing_d),
+    num_h_punishing_d = sum(h_punishing_d),
+    num_h_punishing_h = sum(h_punishing_h),
+    num_d_punishing_h = sum(d_punishing_h),
+    num_d_punishing_d = sum(d_punishing_d),
+  )
+
+dat.c.g_punishment4 <- dat.c.p_punishment %>%
+  filter(punishment_size > 0) %>%
+  group_by(group_id, round_number, punished_id_in_group) %>%
+  summarise(
+    # Whether this participant was punished
+    punished = sum(punishment_size) > 0,
+    h_punished = unique(punished_type)[1] == "h",
+    d_punished = unique(punished_type)[1] == "d",
+  ) %>%
+  group_by(group_id, round_number) %>%
+  summarise(
+    num_punished = sum(punished),
+    num_h_punished = sum(h_punished),
+    num_d_punished = sum(d_punished),
+  )
+
+# Combine the four data frames
+dat.c.g_punishment <- dat.c.g_punishment1 %>%
+  left_join(dat.c.g_punishment2, by = c("group_id", "round_number")) %>%
+  left_join(dat.c.g_punishment3, by = c("group_id", "round_number")) %>%
+  left_join(dat.c.g_punishment4, by = c("group_id", "round_number"))
+
+# Fill in zeros
+dat.c.g_punishment <- dat.c.g_punishment %>%
+  mutate(across(sum_p:num_d_punished, ~ ifelse(is.na(.), 0, .)))
+```
+
+## Save data
+
+`data_ready.RData` contains all data frames listed at the beginning of this document. The data analysis script works on this file.
+
+```{r}
+rm(list = setdiff(ls(), my_datasets))
+save.image(file = "data/data_ready_for_analysis.RData")
+```
